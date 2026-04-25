@@ -1,0 +1,1660 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Browser Self-Driving Robot (BLE + Map Nav)</title>
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: #121a33;
+      --accent: #29d391;
+      --danger: #ff5d5d;
+      --text: #eaf0ff;
+      --muted: #a9b3d1;
+      --route: #4da3ff;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, sans-serif;
+      background: radial-gradient(circle at top, #1d2a55 0%, #0b1020 60%);
+      color: var(--text);
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 16px;
+    }
+
+    .app {
+      width: min(1100px, 100%);
+      background: rgba(18, 26, 51, 0.94);
+      border: 1px solid #2d3b6a;
+      border-radius: 14px;
+      padding: 14px;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    button {
+      border: none;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-weight: 700;
+      cursor: pointer;
+      color: #041314;
+      background: var(--accent);
+    }
+
+    button.secondary {
+      background: #9fb4ff;
+      color: #111a3a;
+    }
+
+    button.danger {
+      background: var(--danger);
+      color: #2a0909;
+    }
+
+    .nav-controls {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    input[type="text"] {
+      width: 100%;
+      border-radius: 8px;
+      border: 1px solid #33477f;
+      background: #0f1730;
+      color: var(--text);
+      padding: 10px;
+      font-size: 14px;
+    }
+
+    .status {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 8px;
+      margin-bottom: 12px;
+      font-size: 14px;
+    }
+
+    .card {
+      background: #0f1730;
+      border: 1px solid #273868;
+      border-radius: 10px;
+      padding: 8px 10px;
+    }
+
+    .k {
+      color: var(--muted);
+    }
+
+    .v {
+      font-weight: 700;
+    }
+
+    .main-grid {
+      display: grid;
+      grid-template-columns: 1.25fr 1fr;
+      gap: 12px;
+    }
+
+    .video-wrap {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: #000;
+      border-radius: 10px;
+      overflow: hidden;
+      border: 1px solid #30457e;
+    }
+
+    video,
+    canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    #map {
+      width: 100%;
+      min-height: 340px;
+      border-radius: 10px;
+      overflow: hidden;
+      border: 1px solid #30457e;
+    }
+
+    .hint {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 10px;
+    }
+
+    @media (max-width: 900px) {
+      .main-grid {
+        grid-template-columns: 1fr;
+      }
+      #map {
+        min-height: 280px;
+      }
+      .nav-controls {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="controls">
+      <button id="connectBtn">Connect BLE</button>
+      <button id="startBtn" class="secondary">Start AI</button>
+      <button id="stopBtn" class="danger">Stop AI</button>
+    </div>
+
+    <div class="nav-controls">
+      <button id="clearRouteBtn" class="danger">Clear Route</button>
+    </div>
+
+    <div class="status">
+      <div class="card"><span class="k">BLE:</span> <span id="bleStatus" class="v">Disconnected</span></div>
+      <div class="card"><span class="k">AI:</span> <span id="aiStatus" class="v">Idle</span></div>
+      <div class="card"><span class="k">Road Check:</span> <span id="roadStatus" class="v">Unknown</span></div>
+      <div class="card"><span class="k">Current Command:</span> <span id="cmdStatus" class="v">S</span></div>
+      <div class="card"><span class="k">Navigation:</span> <span id="navStatus" class="v">No route</span></div>
+      <div class="card"><span class="k">Distance Left:</span> <span id="distanceStatus" class="v">-</span></div>
+      <div class="card"><span class="k">Turn Hint:</span> <span id="turnStatus" class="v">-</span></div>
+      <div class="card"><span class="k">GPS:</span> <span id="gpsStatus" class="v">Waiting</span></div>
+      <div class="card"><span class="k">Orientation:</span> <span id="orientationStatus" class="v">Waiting</span></div>
+      <div class="card"><span class="k">Road Model:</span> <span id="roadModelStatus" class="v">Initializing</span></div>
+      <div class="card"><span class="k">FPS:</span> <span id="fpsStatus" class="v">0</span></div>
+    </div>
+
+    <div class="main-grid">
+      <div class="video-wrap">
+        <video id="video" autoplay playsinline muted></video>
+        <canvas id="overlay"></canvas>
+      </div>
+      <div id="map"></div>
+    </div>
+
+    <div class="hint">Click any map location to route there. Blue dot is your live location. Blue line is the route. Safety priority: obstacle/road STOP overrides navigation turn commands.</div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+  <script>
+    const SERVICE_UUID = "19b10010-e8f2-537e-4f6c-d104768a1214";
+    const COMMAND_UUID = "19b10011-e8f2-537e-4f6c-d104768a1214";
+
+    const OBSTACLE_CLASSES = new Set([
+      "person", "car", "truck", "bus", "bicycle", "motorcycle",
+      "dog", "cat", "chair", "bench", "potted plant", "stop sign"
+    ]);
+
+    const video = document.getElementById("video");
+    const canvas = document.getElementById("overlay");
+    const ctx = canvas.getContext("2d");
+
+    const bleStatus = document.getElementById("bleStatus");
+    const aiStatus = document.getElementById("aiStatus");
+    const roadStatus = document.getElementById("roadStatus");
+    const cmdStatus = document.getElementById("cmdStatus");
+    const navStatus = document.getElementById("navStatus");
+    const distanceStatus = document.getElementById("distanceStatus");
+    const turnStatus = document.getElementById("turnStatus");
+    const gpsStatus = document.getElementById("gpsStatus");
+    const orientationStatus = document.getElementById("orientationStatus");
+    const roadModelStatus = document.getElementById("roadModelStatus");
+    const fpsStatus = document.getElementById("fpsStatus");
+
+    const connectBtn = document.getElementById("connectBtn");
+    const startBtn = document.getElementById("startBtn");
+    const stopBtn = document.getElementById("stopBtn");
+    const clearRouteBtn = document.getElementById("clearRouteBtn");
+
+    let model = null;
+    let stream = null;
+    let running = false;
+    let bleChar = null;
+    let lastCmd = "S";
+    let lastCmdAt = 0;
+    let lastFpsTime = performance.now();
+    let frameCount = 0;
+    let lastInferTime = 0;
+    let obstacleBiasTurn = "R";
+    const commandHistory = [];
+    const COMMAND_HISTORY_MAX = 5;
+    const MIN_COMMAND_HOLD_MS = 220;
+    let plannedPathCommand = "S";
+
+    const sampleCanvas = document.createElement("canvas");
+    const sampleCtx = sampleCanvas.getContext("2d", { willReadFrequently: true });
+    const laneCanvas = document.createElement("canvas");
+    const laneCtx = laneCanvas.getContext("2d", { willReadFrequently: true });
+
+    let map = null;
+    let userMarker = null;
+    let headingLine = null;
+    let startMarker = null;
+    let destinationMarker = null;
+    let routeLine = null;
+    let watchId = null;
+    let currentPosition = null;
+    let previousPosition = null;
+
+    let routePoints = [];
+    let nextRouteIndex = 1;
+    let routeActive = false;
+    let routeDestination = null;
+    let navTurnHint = "STRAIGHT";
+    const gpsSamples = [];
+    const rawTrace = [];
+    let lastRawFix = null;
+    let lastSnapAt = 0;
+    let lastSnappedPosition = null;
+    let orientationHeadingDeg = null;
+    let orientationLastTs = 0;
+    let orientationSource = "none";
+    let orientationReady = false;
+    let orientationPermissionTried = false;
+    let orientationListenerAttached = false;
+    const ORIENTATION_SMOOTHING = 0.2;
+    const ROUTE_FETCH_TIMEOUT_MS = 9000;
+    const ROUTE_FETCH_RETRIES = 3;
+    const MAX_ROUTE_ENDPOINT_SNAP_M = 60;
+    let laneState = {
+      leftLine: null,
+      rightLine: null,
+      centerOffset: 0,
+      quality: 0,
+      kf: {
+        la: { x: 0, p: 1, init: false },
+        lb: { x: 0, p: 200, init: false },
+        ra: { x: 0, p: 1, init: false },
+        rb: { x: 0, p: 200, init: false },
+        co: { x: 0, p: 1, init: false }
+      }
+    };
+
+    function initMap() {
+      map = L.map("map").setView([37.7749, -122.4194], 14);
+      L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}", {
+        maxZoom: 19,
+        attribution: "Tiles &copy; Esri"
+      }).addTo(map);
+      L.control.scale({ imperial: false }).addTo(map);
+
+      map.on("click", async (e) => {
+        const destination = {
+          lat: e.latlng.lat,
+          lon: e.latlng.lng,
+          label: "Clicked location"
+        };
+        navStatus.textContent = "Routing to clicked point...";
+        try {
+          await routeToPoint(destination);
+        } catch (err) {
+          navStatus.textContent = "Route error";
+          turnStatus.textContent = (err && err.message) ? err.message : "Could not build route";
+        }
+      });
+    }
+
+    async function initCamera() {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false
+      });
+      video.srcObject = stream;
+      await video.play();
+      resizeCanvases();
+      window.addEventListener("resize", resizeCanvases);
+    }
+
+    function resizeCanvases() {
+      const w = video.videoWidth || 1280;
+      const h = video.videoHeight || 720;
+      canvas.width = w;
+      canvas.height = h;
+      sampleCanvas.width = w;
+      sampleCanvas.height = h;
+      laneCanvas.width = 240;
+      laneCanvas.height = 135;
+    }
+
+    async function loadModel() {
+      aiStatus.textContent = "Loading model...";
+      model = await cocoSsd.load({ base: "lite_mobilenet_v2" });
+      aiStatus.textContent = "Model ready";
+    }
+
+    async function connectBLE() {
+      if (!navigator.bluetooth) {
+        bleStatus.textContent = "Web Bluetooth unavailable";
+        return;
+      }
+      bleStatus.textContent = "Connecting...";
+      const device = await navigator.bluetooth.requestDevice({
+        filters: [{ services: [SERVICE_UUID] }]
+      });
+      const server = await device.gatt.connect();
+      const service = await server.getPrimaryService(SERVICE_UUID);
+      bleChar = await service.getCharacteristic(COMMAND_UUID);
+      bleStatus.textContent = "Connected";
+    }
+
+    async function sendCommand(cmd) {
+      const now = performance.now();
+      const smoothed = smoothedCommand(cmd);
+      cmdStatus.textContent = smoothed;
+      if (!bleChar) return;
+      if (smoothed === lastCmd && now - lastCmdAt < MIN_COMMAND_HOLD_MS) return;
+      if (now - lastCmdAt < MIN_COMMAND_HOLD_MS && smoothed !== "S") return;
+      lastCmd = smoothed;
+      lastCmdAt = now;
+      try {
+        await bleChar.writeValue(new TextEncoder().encode(smoothed));
+      } catch {
+        bleStatus.textContent = "Write error";
+      }
+    }
+
+    function drawDetections(predictions, laneModel, pathCommand) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      const third = canvas.width / 3;
+      ctx.strokeStyle = "rgba(255,255,255,0.25)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(third, 0); ctx.lineTo(third, canvas.height);
+      ctx.moveTo(2 * third, 0); ctx.lineTo(2 * third, canvas.height);
+      ctx.stroke();
+
+      drawLaneOverlay(laneModel, pathCommand || "S", predictions || []);
+
+      for (const p of predictions) {
+        const [x, y, w, h] = p.bbox;
+        const score = (p.score * 100).toFixed(1) + "%";
+        const label = p.class + " " + score;
+
+        ctx.strokeStyle = "#29d391";
+        ctx.lineWidth = 3;
+        ctx.strokeRect(x, y, w, h);
+
+        ctx.fillStyle = "rgba(10,20,30,0.75)";
+        ctx.fillRect(x, Math.max(0, y - 22), Math.max(120, label.length * 7), 22);
+        ctx.fillStyle = "#eaf0ff";
+        ctx.font = "14px Segoe UI";
+        ctx.fillText(label, x + 6, Math.max(16, y - 6));
+      }
+    }
+
+    function lum(data, idx) {
+      return data[idx] * 0.299 + data[idx + 1] * 0.587 + data[idx + 2] * 0.114;
+    }
+
+    function fitLine(points) {
+      if (!points || points.length < 8) return null;
+      let sumY = 0;
+      let sumX = 0;
+      let sumYY = 0;
+      let sumYX = 0;
+      const n = points.length;
+      for (const p of points) {
+        sumY += p.y;
+        sumX += p.x;
+        sumYY += p.y * p.y;
+        sumYX += p.y * p.x;
+      }
+      const den = n * sumYY - sumY * sumY;
+      if (Math.abs(den) < 1e-6) return null;
+      const a = (n * sumYX - sumY * sumX) / den;
+      const b = (sumX - a * sumY) / n;
+      return { a: a, b: b };
+    }
+
+    function kalmanUpdate1D(state, measurement, q, r) {
+      if (!state.init) {
+        state.x = measurement;
+        state.p = 1;
+        state.init = true;
+        return state.x;
+      }
+      // predict
+      state.p = state.p + q;
+      // update
+      const k = state.p / (state.p + r);
+      state.x = state.x + k * (measurement - state.x);
+      state.p = (1 - k) * state.p;
+      return state.x;
+    }
+
+    function predictLineFromFilter(prefix, fallbackA, fallbackB) {
+      const kf = laneState.kf;
+      const aState = kf[prefix + "a"];
+      const bState = kf[prefix + "b"];
+      if (aState.init && bState.init) return { a: aState.x, b: bState.x };
+      return { a: fallbackA, b: fallbackB };
+    }
+
+    function estimateRoadModel() {
+      const srcW = sampleCanvas.width;
+      const srcH = sampleCanvas.height;
+      if (srcW < 2 || srcH < 2) {
+        return { roadLikely: false, laneCenterOffset: 0, laneQuality: 0 };
+      }
+
+      sampleCtx.drawImage(video, 0, 0, srcW, srcH);
+      const roiTopPx = Math.floor(srcH * 0.38);
+      laneCtx.drawImage(sampleCanvas, 0, roiTopPx, srcW, srcH - roiTopPx, 0, 0, laneCanvas.width, laneCanvas.height);
+
+      const w = laneCanvas.width;
+      const h = laneCanvas.height;
+      const img = laneCtx.getImageData(0, 0, w, h).data;
+      const leftPts = [];
+      const rightPts = [];
+
+      const lastLeftLine = laneState.leftLine || predictLineFromFilter("l", 0, Math.floor(w * 0.28));
+      const lastRightLine = laneState.rightLine || predictLineFromFilter("r", 0, Math.floor(w * 0.72));
+      const edgeThreshold = 13;
+      const half = Math.floor(w * 0.5);
+
+      for (let y = h - 4; y >= Math.floor(h * 0.14); y -= 2) {
+        const leftPred = lastLeftLine ? (lastLeftLine.a * y + lastLeftLine.b) : Math.floor(w * 0.28);
+        const rightPred = lastRightLine ? (lastRightLine.a * y + lastRightLine.b) : Math.floor(w * 0.72);
+
+        const lStart = Math.max(3, Math.floor(leftPred - 42));
+        const lEnd = Math.min(half - 3, Math.floor(leftPred + 42));
+        const rStart = Math.max(half + 3, Math.floor(rightPred - 42));
+        const rEnd = Math.min(w - 3, Math.floor(rightPred + 42));
+
+        let leftBestX = -1;
+        let leftBestScore = 0;
+        for (let x = lStart; x <= lEnd; x++) {
+          const iL = (y * w + (x - 2)) * 4;
+          const iR = (y * w + (x + 2)) * 4;
+          const grad = Math.abs(lum(img, iR) - lum(img, iL));
+          const centerPenalty = Math.abs(x - leftPred) * 0.22;
+          const score = grad - centerPenalty;
+          if (score > leftBestScore) {
+            leftBestScore = score;
+            leftBestX = x;
+          }
+        }
+
+        let rightBestX = -1;
+        let rightBestScore = 0;
+        for (let x = rStart; x <= rEnd; x++) {
+          const iL = (y * w + (x - 2)) * 4;
+          const iR = (y * w + (x + 2)) * 4;
+          const grad = Math.abs(lum(img, iR) - lum(img, iL));
+          const centerPenalty = Math.abs(x - rightPred) * 0.22;
+          const score = grad - centerPenalty;
+          if (score > rightBestScore) {
+            rightBestScore = score;
+            rightBestX = x;
+          }
+        }
+
+        if (leftBestX >= 0 && leftBestScore > edgeThreshold) leftPts.push({ x: leftBestX, y: y });
+        if (rightBestX >= 0 && rightBestScore > edgeThreshold) rightPts.push({ x: rightBestX, y: y });
+      }
+
+      const leftLine = fitLine(leftPts);
+      const rightLine = fitLine(rightPts);
+
+      const qPoints = Math.max(0, Math.min(1, (leftPts.length + rightPts.length) / 90));
+      let qGeom = 0;
+      if (leftLine && rightLine) {
+        const yNear = h - 4;
+        const yFar = Math.floor(h * 0.28);
+        const widthNear = (rightLine.a * yNear + rightLine.b) - (leftLine.a * yNear + leftLine.b);
+        const widthFar = (rightLine.a * yFar + rightLine.b) - (leftLine.a * yFar + leftLine.b);
+        const plausibleNear = widthNear > w * 0.22 && widthNear < w * 0.92;
+        const plausibleFar = widthFar > w * 0.12 && widthFar < w * 0.74;
+        const converging = widthNear > widthFar;
+        qGeom = plausibleNear && plausibleFar && converging ? 1 : 0.2;
+      }
+      const qualityRaw = qPoints * 0.7 + qGeom * 0.3;
+
+      let laneCenterOffset = laneState.centerOffset;
+      if (leftLine && rightLine) {
+        const yRef = h - 6;
+        const leftX = leftLine.a * yRef + leftLine.b;
+        const rightX = rightLine.a * yRef + rightLine.b;
+        const laneCenter = (leftX + rightX) * 0.5;
+        laneCenterOffset = (laneCenter - w * 0.5) / (w * 0.5);
+      }
+
+      const qBase = Math.max(0.001, 0.03 + (1 - qualityRaw) * 0.08);
+      const rBase = Math.max(0.001, 0.05 + (1 - qualityRaw) * 0.2);
+      const nextLeft = leftLine || laneState.leftLine;
+      const nextRight = rightLine || laneState.rightLine;
+
+      if (nextLeft) {
+        const la = kalmanUpdate1D(laneState.kf.la, nextLeft.a, qBase, rBase);
+        const lb = kalmanUpdate1D(laneState.kf.lb, nextLeft.b, qBase * 40, rBase * 40);
+        laneState.leftLine = { a: la, b: lb };
+      }
+      if (nextRight) {
+        const ra = kalmanUpdate1D(laneState.kf.ra, nextRight.a, qBase, rBase);
+        const rb = kalmanUpdate1D(laneState.kf.rb, nextRight.b, qBase * 40, rBase * 40);
+        laneState.rightLine = { a: ra, b: rb };
+      }
+
+      laneState.centerOffset = kalmanUpdate1D(
+        laneState.kf.co,
+        laneCenterOffset,
+        0.01,
+        0.08 + (1 - qualityRaw) * 0.25
+      );
+      laneState.quality = qualityRaw * 0.55 + laneState.quality * 0.45;
+
+      const roadLikely = !!(laneState.leftLine && laneState.rightLine && laneState.quality > 0.33);
+      roadStatus.textContent = roadLikely ? "Road edges locked" : "Searching edges";
+      roadModelStatus.textContent = roadLikely ? ("Quality " + Math.round(laneState.quality * 100) + "%") : "Low confidence";
+
+      return {
+        roadLikely: roadLikely,
+        laneCenterOffset: laneState.centerOffset,
+        laneQuality: laneState.quality,
+        leftLine: laneState.leftLine,
+        rightLine: laneState.rightLine
+      };
+    }
+
+    function bezierPoint(t, p0, p1, p2) {
+      const u = 1 - t;
+      return (u * u * p0) + (2 * u * t * p1) + (t * t * p2);
+    }
+
+    function drawLaneOverlay(model, pathCommand, predictions) {
+      if (!model || !model.leftLine || !model.rightLine) return;
+      const roiTop = canvas.height * 0.38;
+      const roiHeight = canvas.height * 0.62;
+      const sx = canvas.width / laneCanvas.width;
+      const sy = roiHeight / laneCanvas.height;
+      const yTop = Math.floor(laneCanvas.height * 0.18);
+      const yBottom = laneCanvas.height - 2;
+
+      function lineX(line, y) { return line.a * y + line.b; }
+      function toCX(x) { return x * sx; }
+      function toCY(y) { return roiTop + y * sy; }
+
+      const lyTop = lineX(model.leftLine, yTop);
+      const lyBottom = lineX(model.leftLine, yBottom);
+      const ryTop = lineX(model.rightLine, yTop);
+      const ryBottom = lineX(model.rightLine, yBottom);
+
+      // Fill full detected road corridor
+      ctx.fillStyle = "rgba(80, 200, 120, 0.18)";
+      ctx.beginPath();
+      ctx.moveTo(toCX(lyTop), toCY(yTop));
+      ctx.lineTo(toCX(ryTop), toCY(yTop));
+      ctx.lineTo(toCX(ryBottom), toCY(yBottom));
+      ctx.lineTo(toCX(lyBottom), toCY(yBottom));
+      ctx.closePath();
+      ctx.fill();
+
+      // Edge lines
+      ctx.strokeStyle = "rgba(255, 225, 80, 0.95)";
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(toCX(lyTop), toCY(yTop));
+      ctx.lineTo(toCX(lyBottom), toCY(yBottom));
+      ctx.stroke();
+
+      ctx.strokeStyle = "rgba(80, 200, 255, 0.95)";
+      ctx.beginPath();
+      ctx.moveTo(toCX(ryTop), toCY(yTop));
+      ctx.lineTo(toCX(ryBottom), toCY(yBottom));
+      ctx.stroke();
+
+      // Planned path ribbon (blue), based on intended command.
+      const cTop = (lyTop + ryTop) * 0.5;
+      const cBottom = (lyBottom + ryBottom) * 0.5;
+      const widthBottom = Math.max(18, (ryBottom - lyBottom) * 0.28);
+      const widthTop = Math.max(10, (ryTop - lyTop) * 0.2);
+
+      let offsetTop = 0;
+      let offsetMid = 0;
+      let offsetBottom = 0;
+      if (pathCommand === "L") {
+        offsetTop = -(ryTop - lyTop) * 0.28;
+        offsetMid = -(ryBottom - lyBottom) * 0.20;
+        offsetBottom = -(ryBottom - lyBottom) * 0.06;
+      } else if (pathCommand === "R") {
+        offsetTop = (ryTop - lyTop) * 0.28;
+        offsetMid = (ryBottom - lyBottom) * 0.20;
+        offsetBottom = (ryBottom - lyBottom) * 0.06;
+      }
+
+      const yMid = Math.floor((yTop + yBottom) * 0.58);
+      const cMid = (lineX(model.leftLine, yMid) + lineX(model.rightLine, yMid)) * 0.5;
+
+      // Obstacle-aware deformation: push path away from in-corridor vehicles.
+      let obstaclePush = 0;
+      for (const p of predictions) {
+        if (!OBSTACLE_CLASSES.has(p.class) || p.score < 0.5) continue;
+        const [bx, by, bw, bh] = p.bbox;
+        const cxCanvas = bx + bw * 0.5;
+        const cyCanvas = by + bh * 0.7;
+        if (cyCanvas < roiTop || cyCanvas > roiTop + roiHeight) continue;
+
+        const xLane = cxCanvas / sx;
+        const yLane = (cyCanvas - roiTop) / sy;
+        const t = Math.max(0, Math.min(1, (yLane - yBottom) / (yTop - yBottom)));
+        const p0Center = cBottom + offsetBottom;
+        const p1Center = cMid + offsetMid;
+        const p2Center = cTop + offsetTop;
+        const cxPath = bezierPoint(t, p0Center, p1Center, p2Center);
+        const dx = xLane - cxPath;
+        const laneWidthAtY = Math.max(20, (lineX(model.rightLine, yLane) - lineX(model.leftLine, yLane)));
+        const avoidWidth = laneWidthAtY * 0.26;
+        if (Math.abs(dx) < avoidWidth) {
+          const depthWeight = 1 - t; // stronger near vehicle bottom (closer to ego)
+          const clsWeight = (p.class === "person") ? 1.35 : 1.0;
+          const push = ((avoidWidth - Math.abs(dx)) / avoidWidth) * depthWeight * clsWeight;
+          obstaclePush += (dx >= 0 ? -1 : 1) * push;
+        }
+      }
+      obstaclePush = Math.max(-0.55, Math.min(0.55, obstaclePush));
+      const widthNearForPush = (ryBottom - lyBottom);
+      const widthFarForPush = (ryTop - lyTop);
+      offsetBottom += obstaclePush * widthNearForPush * 0.18;
+      offsetMid += obstaclePush * widthNearForPush * 0.26;
+      offsetTop += obstaclePush * widthFarForPush * 0.32;
+
+      const p0x = cBottom + offsetBottom;
+      const p0y = yBottom;
+      const p1x = cMid + offsetMid;
+      const p1y = yMid;
+      const p2x = cTop + offsetTop;
+      const p2y = yTop;
+
+      function shift(dx) {
+        return {
+          p0x: p0x + dx * (widthBottom * 0.5),
+          p1x: p1x + dx * (widthBottom * 0.36),
+          p2x: p2x + dx * (widthTop * 0.45)
+        };
+      }
+      const l = shift(-1);
+      const r = shift(1);
+
+      ctx.fillStyle = "rgba(60, 140, 255, 0.38)";
+      ctx.beginPath();
+      ctx.moveTo(toCX(l.p0x), toCY(p0y));
+      ctx.quadraticCurveTo(toCX(l.p1x), toCY(p1y), toCX(l.p2x), toCY(p2y));
+      ctx.lineTo(toCX(r.p2x), toCY(p2y));
+      ctx.quadraticCurveTo(toCX(r.p1x), toCY(p1y), toCX(r.p0x), toCY(p0y));
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.strokeStyle = "rgba(70, 165, 255, 0.95)";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(toCX(p0x), toCY(p0y));
+      ctx.quadraticCurveTo(toCX(p1x), toCY(p1y), toCX(p2x), toCY(p2y));
+      ctx.stroke();
+
+      // Lightweight HUD for heading + intent.
+      const headingText = Number.isFinite(orientationHeadingDeg) ? (Math.round(orientationHeadingDeg) + " deg") : "n/a";
+      ctx.fillStyle = "rgba(8, 15, 30, 0.62)";
+      ctx.fillRect(10, 10, 186, 44);
+      ctx.fillStyle = "#d5e8ff";
+      ctx.font = "13px Segoe UI";
+      ctx.fillText("Path: " + (pathCommand || "S"), 18, 27);
+      ctx.fillText("Heading: " + headingText, 18, 44);
+    }
+
+    function pushGpsSample(sample) {
+      gpsSamples.push(sample);
+      if (gpsSamples.length > 6) gpsSamples.shift();
+    }
+
+    function pushRawTrace(sample) {
+      rawTrace.push(sample);
+      if (rawTrace.length > 12) rawTrace.shift();
+    }
+
+    function smoothedGpsSample() {
+      if (!gpsSamples.length) return null;
+      let latSum = 0;
+      let lonSum = 0;
+      let heading = null;
+      let speed = null;
+      let latest = gpsSamples[gpsSamples.length - 1];
+      for (const s of gpsSamples) {
+        latSum += s.lat;
+        lonSum += s.lon;
+        if (Number.isFinite(s.heading)) heading = s.heading;
+        if (Number.isFinite(s.speed)) speed = s.speed;
+      }
+      return {
+        lat: latSum / gpsSamples.length,
+        lon: lonSum / gpsSamples.length,
+        heading: heading,
+        speed: speed,
+        accuracy: latest.accuracy,
+        t: latest.t
+      };
+    }
+
+    function clamp(v, lo, hi) {
+      return Math.max(lo, Math.min(hi, v));
+    }
+
+    function destinationPointMeters(latDeg, lonDeg, bearingDeg, distMeters) {
+      const R = 6371000;
+      const br = bearingDeg * Math.PI / 180;
+      const lat1 = latDeg * Math.PI / 180;
+      const lon1 = lonDeg * Math.PI / 180;
+      const ang = distMeters / R;
+      const lat2 = Math.asin(
+        Math.sin(lat1) * Math.cos(ang) +
+        Math.cos(lat1) * Math.sin(ang) * Math.cos(br)
+      );
+      const lon2 = lon1 + Math.atan2(
+        Math.sin(br) * Math.sin(ang) * Math.cos(lat1),
+        Math.cos(ang) - Math.sin(lat1) * Math.sin(lat2)
+      );
+      return { lat: lat2 * 180 / Math.PI, lon: lon2 * 180 / Math.PI };
+    }
+
+    function updateMapHeadingArrow() {
+      if (!map || !currentPosition || !Number.isFinite(orientationHeadingDeg)) return;
+      const end = destinationPointMeters(currentPosition.lat, currentPosition.lon, orientationHeadingDeg, 14);
+      const pts = [[currentPosition.lat, currentPosition.lon], [end.lat, end.lon]];
+      if (!headingLine) {
+        headingLine = L.polyline(pts, { color: "#2ea8ff", weight: 4, opacity: 0.92 }).addTo(map);
+      } else {
+        headingLine.setLatLngs(pts);
+      }
+    }
+
+    async function initOrientationTracking() {
+      if (!("DeviceOrientationEvent" in window)) {
+        orientationStatus.textContent = "Not supported";
+        return;
+      }
+      if (orientationPermissionTried && orientationReady) return;
+      orientationPermissionTried = true;
+
+      try {
+        if (typeof DeviceOrientationEvent.requestPermission === "function") {
+          const result = await DeviceOrientationEvent.requestPermission();
+          if (result !== "granted") {
+            orientationStatus.textContent = "Permission denied";
+            orientationPermissionTried = false;
+            return;
+          }
+        }
+      } catch {
+        // Some browsers throw outside user gesture; allow retry on Start AI click.
+        orientationPermissionTried = false;
+        orientationStatus.textContent = "Tap Start AI for orientation";
+        return;
+      }
+
+      if (orientationListenerAttached) return;
+      orientationListenerAttached = true;
+      const onOrientation = (e, sourceLabel) => {
+        const headingBase = headingFromOrientationEvent(e);
+        if (!Number.isFinite(headingBase)) return;
+        const ts = Number.isFinite(e.timeStamp) ? e.timeStamp : performance.now();
+        if (!Number.isFinite(orientationHeadingDeg)) {
+          orientationHeadingDeg = headingBase;
+        } else {
+          const dt = Math.max(0.02, (ts - orientationLastTs) / 1000);
+          const delta = normalizeAngle(headingBase - orientationHeadingDeg);
+          const turnRate = Math.abs(delta) / dt;
+          if (turnRate < 260) {
+            orientationHeadingDeg = normalize360(
+              orientationHeadingDeg + delta * ORIENTATION_SMOOTHING
+            );
+          }
+        }
+        orientationLastTs = ts;
+        orientationSource = sourceLabel;
+
+        orientationReady = true;
+
+        const h = Math.round(orientationHeadingDeg);
+        orientationStatus.textContent = "Heading " + h + " deg" +
+          (orientationSource ? " [" + orientationSource + "]" : "");
+        updateMapHeadingArrow();
+      };
+
+      window.addEventListener("deviceorientationabsolute", (e) => onOrientation(e, "abs"), { passive: true });
+      window.addEventListener("deviceorientation", (e) => {
+        const src = (e && e.absolute) ? "abs" : "ori";
+        onOrientation(e, src);
+      }, { passive: true });
+    }
+
+    async function fetchJsonWithTimeout(url, timeoutMs) {
+      const ctrl = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), timeoutMs);
+      try {
+        const res = await fetch(url, { signal: ctrl.signal });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return await res.json();
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+
+    async function osrmNearestCandidates(position, number = 5) {
+      const url = "https://router.project-osrm.org/nearest/v1/driving/" +
+        position.lon + "," + position.lat + "?number=" + number;
+      const data = await fetchJsonWithTimeout(url, 7000);
+      if (!data.waypoints || !data.waypoints.length) return [];
+      return data.waypoints.map((wp) => ({
+        lat: wp.location[1],
+        lon: wp.location[0],
+        snapDistance: Number(wp.distance || 0),
+        name: wp.name || ""
+      }));
+    }
+
+    async function osrmClosestRoad(position, maxSnapMeters = null) {
+      const candidates = await osrmNearestCandidates(position, 1);
+      if (!candidates.length) return position;
+      const c = candidates[0];
+      if (maxSnapMeters !== null && c.snapDistance > maxSnapMeters) {
+        throw new Error("Selected point is too far from a drivable road");
+      }
+      return {
+        lat: c.lat,
+        lon: c.lon,
+        heading: position.heading,
+        accuracy: position.accuracy,
+        t: position.t,
+        snapDistance: c.snapDistance,
+        matchMode: "closest"
+      };
+    }
+
+    function estimateTraceHeading() {
+      if (rawTrace.length < 2) return null;
+      const a = rawTrace[rawTrace.length - 2];
+      const b = rawTrace[rawTrace.length - 1];
+      if (distanceMeters(a, b) < 1.5) return null;
+      return bearingDegrees(a, b);
+    }
+
+    function scoreCandidate(candidate, headingHint, prevSnapped) {
+      let score = candidate.snapDistance;
+
+      if (prevSnapped) {
+        const continuityDist = distanceMeters(prevSnapped, candidate);
+        // Penalize unexpected jumps to parallel roads.
+        score += Math.max(0, continuityDist - 20) * 1.2;
+
+        if (headingHint !== null) {
+          const moveBearing = bearingDegrees(prevSnapped, candidate);
+          const delta = Math.abs(normalizeAngle(moveBearing - headingHint));
+          score += delta * 0.6;
+        }
+      }
+      return score;
+    }
+
+    async function osrmNearestRoad(position, maxSnapMeters = null) {
+      const candidates = await osrmNearestCandidates(position, 5);
+      if (!candidates.length) return position;
+
+      const headingHint = Number.isFinite(position.heading) ? position.heading : estimateTraceHeading();
+      const prev = lastSnappedPosition;
+
+      let best = candidates[0];
+      let bestScore = scoreCandidate(best, headingHint, prev);
+      for (let i = 1; i < candidates.length; i++) {
+        const s = scoreCandidate(candidates[i], headingHint, prev);
+        if (s < bestScore) {
+          best = candidates[i];
+          bestScore = s;
+        }
+      }
+
+      const snapDistance = Number(best.snapDistance || 0);
+      if (maxSnapMeters !== null && snapDistance > maxSnapMeters) {
+        throw new Error("Selected point is too far from a drivable road");
+      }
+      return {
+        lat: best.lat,
+        lon: best.lon,
+        heading: position.heading,
+        accuracy: position.accuracy,
+        t: position.t,
+        snapDistance: snapDistance,
+        matchMode: "nearest"
+      };
+    }
+
+    async function osrmMatchTracePosition(fallbackPosition) {
+      if (rawTrace.length < 4) return null;
+      const trace = rawTrace.slice(-8);
+      const coords = trace.map((p) => p.lon + "," + p.lat).join(";");
+
+      let sec = Math.floor(trace[0].t / 1000);
+      const timestamps = [sec];
+      for (let i = 1; i < trace.length; i++) {
+        const next = Math.floor(trace[i].t / 1000);
+        sec = Math.max(sec + 1, next);
+        timestamps.push(sec);
+      }
+      const radiuses = trace.map((p) => clamp(Math.round(p.accuracy || 20), 5, 60));
+
+      const url = "https://router.project-osrm.org/match/v1/driving/" + coords +
+        "?tidy=true&overview=false&geometries=geojson&steps=false&timestamps=" +
+        timestamps.join(";") + "&radiuses=" + radiuses.join(";");
+
+      const res = await fetch(url);
+      if (!res.ok) return null;
+      const data = await res.json();
+      if (!data.tracepoints || !data.tracepoints.length) return null;
+
+      let lastTp = null;
+      for (let i = data.tracepoints.length - 1; i >= 0; i--) {
+        if (data.tracepoints[i]) {
+          lastTp = data.tracepoints[i];
+          break;
+        }
+      }
+      if (!lastTp) return null;
+
+      return {
+        lat: lastTp.location[1],
+        lon: lastTp.location[0],
+        heading: fallbackPosition.heading,
+        accuracy: fallbackPosition.accuracy,
+        t: fallbackPosition.t,
+        matchMode: "trace"
+      };
+    }
+
+    async function getRoadSnappedPosition(position) {
+      const now = Date.now();
+      if (lastSnappedPosition && now - lastSnapAt < 1200) return lastSnappedPosition;
+      lastSnapAt = now;
+
+      try {
+        const snapped = await osrmClosestRoad(position);
+        lastSnappedPosition = snapped;
+        return snapped;
+      } catch {
+        return position;
+      }
+    }
+
+    function isLikelyOutlier(raw) {
+      if (!lastRawFix) return false;
+      const dt = Math.max(0.001, (raw.t - lastRawFix.t) / 1000);
+      const d = distanceMeters(raw, lastRawFix);
+      const speed = d / dt;
+      // Robot should never teleport at high speed.
+      return speed > 8;
+    }
+
+    function distanceMeters(a, b) {
+      const R = 6371000;
+      const lat1 = a.lat * Math.PI / 180;
+      const lat2 = b.lat * Math.PI / 180;
+      const dLat = (b.lat - a.lat) * Math.PI / 180;
+      const dLon = (b.lon - a.lon) * Math.PI / 180;
+      const x = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      return 2 * R * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+    }
+
+    function bearingDegrees(from, to) {
+      const lat1 = from.lat * Math.PI / 180;
+      const lat2 = to.lat * Math.PI / 180;
+      const dLon = (to.lon - from.lon) * Math.PI / 180;
+      const y = Math.sin(dLon) * Math.cos(lat2);
+      const x = Math.cos(lat1) * Math.sin(lat2) -
+                Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+      const brng = Math.atan2(y, x) * 180 / Math.PI;
+      return (brng + 360) % 360;
+    }
+
+    function normalizeAngle(delta) {
+      let v = delta;
+      while (v > 180) v -= 360;
+      while (v < -180) v += 360;
+      return v;
+    }
+
+    function normalize360(angle) {
+      return ((angle % 360) + 360) % 360;
+    }
+
+    function getScreenOrientationAngle() {
+      if (screen.orientation && Number.isFinite(screen.orientation.angle)) {
+        return normalize360(screen.orientation.angle);
+      }
+      if (Number.isFinite(window.orientation)) {
+        return normalize360(window.orientation);
+      }
+      return 0;
+    }
+
+    function headingFromOrientationEvent(e) {
+      if (typeof e.webkitCompassHeading === "number") {
+        return normalize360(e.webkitCompassHeading);
+      }
+      if (typeof e.alpha === "number") {
+        const screenAngle = getScreenOrientationAngle();
+        return normalize360((360 - e.alpha) + screenAngle);
+      }
+      return null;
+    }
+
+    function resolveHeadingDegrees() {
+      if (orientationReady && Number.isFinite(orientationHeadingDeg)) {
+        return orientationHeadingDeg;
+      }
+      return null;
+    }
+
+    function interpolateGeoPoint(a, b, t) {
+      const clamped = Math.max(0, Math.min(1, t));
+      return {
+        lat: a.lat + (b.lat - a.lat) * clamped,
+        lon: a.lon + (b.lon - a.lon) * clamped
+      };
+    }
+
+    function routeLookaheadTarget(index, lookaheadMeters = 18) {
+      if (!routePoints.length) return null;
+      if (index <= 0) return routePoints[Math.min(routePoints.length - 1, 1)];
+      if (index >= routePoints.length) return routePoints[routePoints.length - 1];
+
+      let remain = lookaheadMeters;
+      let segStart = routePoints[index - 1];
+
+      for (let i = index; i < routePoints.length; i++) {
+        const segEnd = routePoints[i];
+        const segLen = distanceMeters(segStart, segEnd);
+        if (segLen > 0.2) {
+          if (remain <= segLen) {
+            return interpolateGeoPoint(segStart, segEnd, remain / segLen);
+          }
+          remain -= segLen;
+        }
+        segStart = segEnd;
+      }
+      return routePoints[routePoints.length - 1];
+    }
+
+    function routeAheadMaxBend(index, span = 5) {
+      if (!routePoints || routePoints.length < 3) return 0;
+      let maxBend = 0;
+      const start = Math.max(1, index);
+      const end = Math.min(routePoints.length - 1, start + span);
+      let prevBearing = null;
+      for (let i = start; i <= end; i++) {
+        const a = routePoints[i - 1];
+        const b = routePoints[i];
+        const segLen = distanceMeters(a, b);
+        if (segLen < 1.5) continue;
+        const br = bearingDegrees(a, b);
+        if (prevBearing !== null) {
+          const bend = Math.abs(normalizeAngle(br - prevBearing));
+          if (bend > maxBend) maxBend = bend;
+        }
+        prevBearing = br;
+      }
+      return maxBend;
+    }
+
+    function updateNavigationGuidance() {
+      if (!routeActive || !currentPosition || routePoints.length < 2) {
+        navTurnHint = "STRAIGHT";
+        return;
+      }
+
+      while (nextRouteIndex < routePoints.length - 1) {
+        const d = distanceMeters(currentPosition, routePoints[nextRouteIndex]);
+        if (d < 8) nextRouteIndex++;
+        else break;
+      }
+
+      const target = routeLookaheadTarget(nextRouteIndex, 18);
+      const destination = routeDestination || routePoints[routePoints.length - 1];
+      const remaining = distanceMeters(currentPosition, destination);
+      distanceStatus.textContent = Math.max(0, Math.round(remaining)) + " m";
+
+      if (remaining < 10) {
+        routeActive = false;
+        navTurnHint = "STOP";
+        navStatus.textContent = "Arrived";
+        turnStatus.textContent = "STOP";
+        return;
+      }
+
+      const heading = resolveHeadingDegrees();
+      if (!target || heading === null) {
+        navTurnHint = "STRAIGHT";
+        navStatus.textContent = "Route active";
+        turnStatus.textContent = "STRAIGHT";
+        return;
+      }
+
+      const targetBearing = bearingDegrees(currentPosition, target);
+      const delta = normalizeAngle(targetBearing - heading);
+      const maxBend = routeAheadMaxBend(nextRouteIndex, 5);
+      const aheadMostlyStraight = maxBend < 14;
+
+      if (aheadMostlyStraight && Math.abs(delta) < 42) navTurnHint = "STRAIGHT";
+      else if (delta > 20) navTurnHint = "RIGHT";
+      else if (delta < -20) navTurnHint = "LEFT";
+      else navTurnHint = "STRAIGHT";
+
+      navStatus.textContent = "Route active";
+      turnStatus.textContent = navTurnHint + " (" + Math.round(delta) + " deg)";
+    }
+
+    function getNavigationDriveCommand() {
+      if (!routeActive) return "S";
+      if (navTurnHint === "LEFT") return "L";
+      if (navTurnHint === "RIGHT") return "R";
+      if (navTurnHint === "STOP") return "S";
+      return "F";
+    }
+
+    function obstacleWeightFor(className) {
+      if (className === "person") return 1.7;
+      if (className === "car" || className === "truck" || className === "bus") return 1.4;
+      return 1.0;
+    }
+
+    function smoothedCommand(cmd) {
+      commandHistory.push(cmd);
+      if (commandHistory.length > COMMAND_HISTORY_MAX) commandHistory.shift();
+
+      const counts = { F: 0, L: 0, R: 0, S: 0 };
+      for (const c of commandHistory) counts[c] = (counts[c] || 0) + 1;
+
+      let best = cmd;
+      let bestCount = -1;
+      for (const c of ["F", "L", "R", "S"]) {
+        if ((counts[c] || 0) > bestCount) {
+          best = c;
+          bestCount = counts[c] || 0;
+        }
+      }
+      return best;
+    }
+
+    function laneSteerCommand(model) {
+      if (!model || !model.roadLikely) return "F";
+      if (model.laneQuality < 0.28) return "F";
+      const off = model.laneCenterOffset;
+      if (off > 0.16) return "R";
+      if (off < -0.16) return "L";
+      return "F";
+    }
+
+    function decideCommand(predictions, roadModel) {
+      const W = canvas.width;
+      const leftEdge = W / 3;
+      const rightEdge = 2 * W / 3;
+      let leftRisk = 0;
+      let centerRisk = 0;
+      let rightRisk = 0;
+
+      for (const p of predictions) {
+        if (!OBSTACLE_CLASSES.has(p.class) || p.score < 0.55) continue;
+        const [x, y, w, h] = p.bbox;
+        const area = w * h;
+        if (area < 1200) continue;
+        const baseRisk = obstacleWeightFor(p.class) * p.score * Math.min(1.0, area / 22000);
+        const cx = x + w / 2;
+        if (cx < leftEdge) leftRisk += baseRisk;
+        else if (cx > rightEdge) rightRisk += baseRisk;
+        else centerRisk += baseRisk;
+      }
+
+      let finalCmd = "S";
+      if (!roadModel.roadLikely && roadModel.laneQuality < 0.16) {
+        plannedPathCommand = "S";
+        return "S";
+      }
+
+      const navCmd = getNavigationDriveCommand();
+      const laneCmd = laneSteerCommand(roadModel);
+      const sideBlockThreshold = 1.0;
+      const centerBlockThreshold = 1.25;
+      const centerHeavyThreshold = 2.2;
+      const leftBlocked = leftRisk >= sideBlockThreshold;
+      const rightBlocked = rightRisk >= sideBlockThreshold;
+      const centerBlocked = centerRisk >= centerBlockThreshold;
+
+      // Requested behavior: center obstacle should prefer turning, not immediate stop.
+      if (centerBlocked) {
+        if (!leftBlocked && rightBlocked) {
+          obstacleBiasTurn = "L";
+          finalCmd = "L";
+          plannedPathCommand = finalCmd;
+          return finalCmd;
+        }
+        if (!rightBlocked && leftBlocked) {
+          obstacleBiasTurn = "R";
+          finalCmd = "R";
+          plannedPathCommand = finalCmd;
+          return finalCmd;
+        }
+        if (!leftBlocked && !rightBlocked) {
+          // choose the clearer side, with tie-break bias to avoid oscillation
+          if (leftRisk + 0.15 < rightRisk) {
+            obstacleBiasTurn = "L";
+            finalCmd = "L";
+            plannedPathCommand = finalCmd;
+            return finalCmd;
+          }
+          if (rightRisk + 0.15 < leftRisk) {
+            obstacleBiasTurn = "R";
+            finalCmd = "R";
+            plannedPathCommand = finalCmd;
+            return finalCmd;
+          }
+          finalCmd = obstacleBiasTurn;
+          plannedPathCommand = finalCmd;
+          return finalCmd;
+        }
+        // both sides blocked: only stop on truly heavy center blockage
+        if (centerRisk >= centerHeavyThreshold) {
+          finalCmd = "S";
+          plannedPathCommand = finalCmd;
+          return finalCmd;
+        }
+        finalCmd = obstacleBiasTurn;
+        plannedPathCommand = finalCmd;
+        return finalCmd;
+      }
+
+      // Side obstacles: soft avoidance while continuing progress.
+      if (leftBlocked && !rightBlocked) {
+        plannedPathCommand = "R";
+        return "R";
+      }
+      if (rightBlocked && !leftBlocked) {
+        plannedPathCommand = "L";
+        return "L";
+      }
+
+      if (navCmd === "F" && laneCmd !== "F") {
+        plannedPathCommand = laneCmd;
+        return laneCmd;
+      }
+      if ((navCmd === "L" || navCmd === "R") && laneCmd !== "F" && navCmd !== laneCmd && roadModel.laneQuality > 0.55) {
+        plannedPathCommand = laneCmd;
+        return laneCmd;
+      }
+      plannedPathCommand = navCmd;
+      return navCmd;
+    }
+
+    function updateUserMarker(position) {
+      const latlng = [position.lat, position.lon];
+      if (!userMarker) {
+        userMarker = L.circleMarker(latlng, {
+          radius: 8,
+          color: "#ffffff",
+          weight: 2,
+          fillColor: "#1e7bff",
+          fillOpacity: 0.95
+        }).addTo(map).bindPopup("Robot location");
+        map.setView(latlng, 16);
+      } else {
+        userMarker.setLatLng(latlng);
+      }
+      updateMapHeadingArrow();
+    }
+
+    function startLocationTracking() {
+      if (!navigator.geolocation) {
+        gpsStatus.textContent = "Not supported";
+        return;
+      }
+      if (watchId !== null) return;
+
+      watchId = navigator.geolocation.watchPosition(
+        async (pos) => {
+          const raw = {
+            lat: pos.coords.latitude,
+            lon: pos.coords.longitude,
+            heading: Number.isFinite(pos.coords.heading) ? pos.coords.heading : null,
+            speed: Number.isFinite(pos.coords.speed) ? pos.coords.speed : null,
+            accuracy: pos.coords.accuracy,
+            t: pos.timestamp || Date.now()
+          };
+
+          // Hard reject very noisy points once we have a position.
+          if (raw.accuracy > 120 && currentPosition) return;
+          if (isLikelyOutlier(raw)) return;
+
+          lastRawFix = raw;
+          pushGpsSample(raw);
+          pushRawTrace(raw);
+
+          const smoothed = smoothedGpsSample();
+          if (!smoothed) return;
+
+          const snapped = await getRoadSnappedPosition(smoothed);
+          previousPosition = currentPosition ? { ...currentPosition } : null;
+          currentPosition = {
+            ...snapped,
+            accuracy: smoothed.accuracy,
+            speed: smoothed.speed
+          };
+
+          const mode = currentPosition.matchMode || "raw";
+          gpsStatus.textContent = "OK good (" + Math.round(smoothed.accuracy) + "m, " + mode + ")";
+          updateUserMarker(currentPosition);
+          updateNavigationGuidance();
+        },
+        () => {
+          gpsStatus.textContent = "Permission/error";
+        },
+        {
+          enableHighAccuracy: true,
+          maximumAge: 2000,
+          timeout: 15000
+        }
+      );
+    }
+
+    function getCurrentPositionOnce(options = {}) {
+      return new Promise((resolve, reject) => {
+        if (!navigator.geolocation) {
+          reject(new Error("Geolocation not supported"));
+          return;
+        }
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            resolve({
+              lat: pos.coords.latitude,
+              lon: pos.coords.longitude,
+              accuracy: pos.coords.accuracy,
+              heading: Number.isFinite(pos.coords.heading) ? pos.coords.heading : null,
+              t: pos.timestamp || Date.now()
+            });
+          },
+          reject,
+          {
+            enableHighAccuracy: options.enableHighAccuracy ?? true,
+            timeout: options.timeout ?? 20000,
+            maximumAge: options.maximumAge ?? 30000
+          }
+        );
+      });
+    }
+
+    async function geocodeDestination(query, around = null) {
+      let primaryUrl = "https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=1&q=" + encodeURIComponent(query);
+      if (around) {
+        const pad = 0.06;
+        const left = around.lon - pad;
+        const right = around.lon + pad;
+        const top = around.lat + pad;
+        const bottom = around.lat - pad;
+        primaryUrl += "&viewbox=" + left + "," + top + "," + right + "," + bottom + "&bounded=1";
+      }
+      try {
+        const res = await fetch(primaryUrl);
+        if (!res.ok) throw new Error("Geocode failed");
+        const data = await res.json();
+        if (data.length) {
+          return {
+            lat: Number(data[0].lat),
+            lon: Number(data[0].lon),
+            label: data[0].display_name
+          };
+        }
+      } catch {
+        // fall through to fallback provider
+      }
+
+      const fallbackUrl = "https://photon.komoot.io/api/?limit=1&lat=" +
+        encodeURIComponent((around && around.lat) || map.getCenter().lat) +
+        "&lon=" +
+        encodeURIComponent((around && around.lon) || map.getCenter().lng) +
+        "&q=" + encodeURIComponent(query);
+      const fallbackRes = await fetch(fallbackUrl);
+      if (!fallbackRes.ok) throw new Error("Geocode failed");
+      const fallbackData = await fallbackRes.json();
+      if (!fallbackData.features || !fallbackData.features.length) {
+        throw new Error("Destination not found");
+      }
+      const p = fallbackData.features[0];
+      return {
+        lat: Number(p.geometry.coordinates[1]),
+        lon: Number(p.geometry.coordinates[0]),
+        label: p.properties.name || query
+      };
+    }
+
+    async function fetchRoute(start, end, profile = "driving") {
+      const templates = [
+        "https://router.project-osrm.org/route/v1/" + profile + "/",
+        "https://routing.openstreetmap.de/routed-car/route/v1/driving/"
+      ];
+
+      let lastErr = null;
+      for (let attempt = 1; attempt <= ROUTE_FETCH_RETRIES; attempt++) {
+        for (const base of templates) {
+          const url = base + start.lon + "," + start.lat + ";" + end.lon + "," + end.lat +
+            "?overview=full&geometries=geojson&steps=true";
+          try {
+            const data = await fetchJsonWithTimeout(url, ROUTE_FETCH_TIMEOUT_MS);
+            if (data && data.routes && data.routes.length) return data.routes[0];
+            lastErr = new Error("No route available");
+          } catch (e) {
+            lastErr = e;
+          }
+        }
+        await new Promise((r) => setTimeout(r, 250 * attempt));
+      }
+      throw new Error("Route request timed out. Try again.");
+    }
+
+    async function resolveRouteStart() {
+      if (currentPosition) return currentPosition;
+      if (lastRawFix) return lastRawFix;
+
+      try {
+        const oneShot = await getCurrentPositionOnce({
+          enableHighAccuracy: true,
+          timeout: 6000,
+          maximumAge: 15000
+        });
+        return oneShot;
+      } catch {
+        const center = map.getCenter();
+        navStatus.textContent = "Using map center as start";
+        return { lat: center.lat, lon: center.lng, accuracy: 999, t: Date.now(), heading: null };
+      }
+    }
+
+    function drawRouteOnMap(route, destination, start) {
+      const routeCoords = route.geometry.coordinates.map((p) => ({ lon: p[0], lat: p[1] }));
+      routePoints = routeCoords;
+      nextRouteIndex = 1;
+      routeDestination = destination;
+      routeActive = true;
+
+      if (routeLine) map.removeLayer(routeLine);
+      routeLine = L.polyline(routeCoords.map((p) => [p.lat, p.lon]), {
+        color: "#4da3ff",
+        weight: 6,
+        opacity: 0.8
+      }).addTo(map);
+
+      if (startMarker) map.removeLayer(startMarker);
+      if (start) {
+        startMarker = L.circleMarker([start.lat, start.lon], {
+          radius: 5,
+          color: "#ffffff",
+          weight: 2,
+          fillColor: "#4da3ff",
+          fillOpacity: 0.9
+        }).addTo(map).bindPopup("Route start");
+      }
+
+      if (destinationMarker) map.removeLayer(destinationMarker);
+      destinationMarker = L.marker([destination.lat, destination.lon]).addTo(map)
+        .bindPopup("Destination");
+
+      const group = L.featureGroup([routeLine, destinationMarker]);
+      if (startMarker) group.addLayer(startMarker);
+      if (userMarker) group.addLayer(userMarker);
+      map.fitBounds(group.getBounds().pad(0.18));
+
+      navStatus.textContent = "Route active";
+      distanceStatus.textContent = Math.round(route.distance) + " m";
+      turnStatus.textContent = "STRAIGHT";
+    }
+
+    function clearRoute() {
+      routeActive = false;
+      routePoints = [];
+      nextRouteIndex = 1;
+      routeDestination = null;
+      navTurnHint = "STRAIGHT";
+
+      if (routeLine) {
+        map.removeLayer(routeLine);
+        routeLine = null;
+      }
+      if (destinationMarker) {
+        map.removeLayer(destinationMarker);
+        destinationMarker = null;
+      }
+      if (startMarker) {
+        map.removeLayer(startMarker);
+        startMarker = null;
+      }
+
+      navStatus.textContent = "No route";
+      distanceStatus.textContent = "-";
+      turnStatus.textContent = "-";
+    }
+
+    async function routeToPoint(destination) {
+      startLocationTracking();
+
+      const startRaw = await resolveRouteStart();
+      if (!startRaw) throw new Error("No start location available");
+      navStatus.textContent = "Building route...";
+
+      const straightDistance = distanceMeters(startRaw, destination);
+      if (straightDistance < 5) {
+        routeActive = false;
+        navStatus.textContent = "Already at destination";
+        distanceStatus.textContent = "0 m";
+        turnStatus.textContent = "STOP";
+        return;
+      }
+
+      const start = await osrmClosestRoad(startRaw, MAX_ROUTE_ENDPOINT_SNAP_M);
+      const end = await osrmClosestRoad(destination, MAX_ROUTE_ENDPOINT_SNAP_M);
+      const route = await fetchRoute(start, end, "driving");
+
+      drawRouteOnMap(route, end, start);
+      turnStatus.textContent = "Road snap S:" + Math.round(start.snapDistance || 0) + "m D:" + Math.round(end.snapDistance || 0) + "m";
+    }
+
+    async function loop() {
+      if (!running) return;
+      requestAnimationFrame(loop);
+
+      const now = performance.now();
+      if (now - lastInferTime < 120) return;
+      lastInferTime = now;
+
+      const predictions = await model.detect(video, 15);
+      const roadModel = estimateRoadModel();
+      const cmd = decideCommand(predictions, roadModel);
+      drawDetections(predictions, roadModel, plannedPathCommand || cmd);
+      await sendCommand(cmd);
+
+      frameCount++;
+      if (now - lastFpsTime >= 1000) {
+        fpsStatus.textContent = String(frameCount);
+        frameCount = 0;
+        lastFpsTime = now;
+      }
+    }
+
+    async function startAI() {
+      if (running) return;
+      aiStatus.textContent = "Initializing...";
+      await initOrientationTracking();
+      startLocationTracking();
+      if (!stream) await initCamera();
+      if (!model) await loadModel();
+      running = true;
+      aiStatus.textContent = "Running";
+      loop();
+    }
+
+    function stopAI() {
+      running = false;
+      aiStatus.textContent = "Stopped";
+      sendCommand("S");
+    }
+
+    connectBtn.addEventListener("click", async () => {
+      try {
+        await connectBLE();
+      } catch (e) {
+        bleStatus.textContent = "Failed";
+        console.error(e);
+      }
+    });
+
+    startBtn.addEventListener("click", async () => {
+      try {
+        await startAI();
+      } catch (e) {
+        aiStatus.textContent = "Error";
+        console.error(e);
+      }
+    });
+
+    stopBtn.addEventListener("click", stopAI);
+
+    clearRouteBtn.addEventListener("click", clearRoute);
+
+    initMap();
+    initOrientationTracking();
+    startLocationTracking();
+
+    if (location.protocol === "file:") {
+      bleStatus.textContent = "Open via HTTPS/localhost for BLE";
+    }
+  </script>
+</body>
+</html>
